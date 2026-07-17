@@ -1,0 +1,21 @@
+# Vendored fork of adobe-cmap-parser 0.4.1 (https://github.com/jrmuizel/adobe-cmap-parser).
+# Patch: the top-level lexer now skips a byte it can't tokenize instead of halting, so a
+# ToUnicode CMap whose CMapName carries a fragment like "-Bold" (e.g. /*Myriad Pro-Bold-3003-0)
+# still reaches its bfchar/bfrange blocks. Without this the map parses empty and bold glyphs
+# extract as U+FFFD garbage. Upstream is unmaintained (adobe-cmap-parser#2, pdf-extract#104).
+# Wired into pdf-extract via [patch.crates-io] in ../../Cargo.toml.
+[package]
+name = "adobe-cmap-parser"
+version = "0.4.1"
+authors = ["Jeff Muizelaar <jmuizelaar@mozilla.com>"]
+license = "MIT"
+description = "A library to parse Adobe CMap files (vendored fork with a lexer-robustness fix)"
+repository = "https://github.com/jrmuizel/adobe-cmap-parser"
+include = ["src/lib.rs"]
+
+[lib]
+name = "adobe_cmap_parser"
+path = "src/lib.rs"
+
+[dependencies]
+pom = "1.0.1"

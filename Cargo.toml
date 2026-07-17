@@ -42,3 +42,8 @@ path = "bench/bench_pdfsink.rs"
 [dev-dependencies]
 tempfile = "3"
 serde_json = "1"
+
+# Vendored fork of adobe-cmap-parser with a lexer-robustness fix (see vendor/adobe-cmap-parser).
+# Fixes ToUnicode CMaps for fonts like Myriad Pro-Bold parsing empty -> garbled bold text.
+[patch.crates-io]
+adobe-cmap-parser = { path = "vendor/adobe-cmap-parser" }
