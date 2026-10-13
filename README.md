@@ -176,7 +176,7 @@ pdfsink-rs render <file.pdf> [page] [output.png]
 
 ## Architecture
 
-Built on `lopdf` for PDF parsing and `pdf-extract` for content stream processing. No Python runtime dependency.
+Built on `lopdf` for PDF parsing and `clark-pdf-extract` for content stream processing. The latter is a minimal `pdf-extract` 0.12.0 fork that fixes CID font width ranges so geometry-based extraction preserves character order. No Python runtime dependency.
 
 | File | Purpose |
 |------|---------|
