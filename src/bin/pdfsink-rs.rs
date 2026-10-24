@@ -24,29 +24,32 @@ fn run() -> Result<()> {
         return Ok(());
     };
 
-    // Per-page commands parse only the page they read. info reports every
-    // page, so it parses them all.
+    // Per-page commands parse only the page they read. info and pages report
+    // every page, so they parse them all.
     let mut args = args.peekable();
     let pdf = match command.as_str() {
-        "info" => PdfDocument::open(&path)?,
+        "info" | "pages" => PdfDocument::open(&path)?,
         _ => PdfDocument::open_pages(&path, &[page_number(args.peek())])?,
     };
 
     match command.as_str() {
         "info" => {
-            let payload = serde_json::json!({
-                "path": path,
-                "page_count": pdf.len(),
-                "pages": pdf.pages().iter().map(|page| serde_json::json!({
-                    "page_number": page.page_number,
-                    "rotation": page.rotation,
-                    "width": page.width,
-                    "height": page.height,
-                    "bbox": page.bbox,
-                    "object_counts": page.object_counts(),
-                })).collect::<Vec<_>>(),
-            });
-            println!("{}", serde_json::to_string_pretty(&payload)?);
+            println!("{}", serde_json::to_string_pretty(&info_payload(&path, &pdf))?);
+        }
+        "pages" => {
+            let strategy = args.next().unwrap_or_else(|| "lines".to_string());
+            let strat: TableStrategy = strategy.parse()?;
+            let mut settings = TableSettings::default();
+            settings.vertical_strategy = strat;
+            settings.horizontal_strategy = strat;
+            let mut payload = info_payload(&path, &pdf);
+            if let Some(entries) = payload["pages"].as_array_mut() {
+                for (entry, page) in entries.iter_mut().zip(pdf.pages()) {
+                    entry["text"] = serde_json::Value::String(page.extract_text());
+                    entry["table"] = serde_json::to_value(page.extract_table(settings.clone())?)?;
+                }
+            }
+            println!("{}", serde_json::to_string(&payload)?);
         }
         "text" => {
             let page = resolve_page(&pdf, args.next())?;
@@ -121,6 +124,21 @@ fn run() -> Result<()> {
     Ok(())
 }
 
+fn info_payload(path: &str, pdf: &PdfDocument) -> serde_json::Value {
+    serde_json::json!({
+        "path": path,
+        "page_count": pdf.len(),
+        "pages": pdf.pages().iter().map(|page| serde_json::json!({
+            "page_number": page.page_number,
+            "rotation": page.rotation,
+            "width": page.width,
+            "height": page.height,
+            "bbox": page.bbox,
+            "object_counts": page.object_counts(),
+        })).collect::<Vec<_>>(),
+    })
+}
+
 /// The page a per-page command reads. The document holds only that page
 /// (see `run`), so it is always the first; the page argument is consumed.
 fn resolve_page<'a>(pdf: &'a PdfDocument, _page_arg: Option<String>) -> Result<&'a pdfsink_rs::Page> {
@@ -141,6 +159,7 @@ pdfsink-rs
 
 Usage:
   pdfsink-rs info <file.pdf>
+  pdfsink-rs pages <file.pdf> [lines|lines_strict|text|explicit]
   pdfsink-rs text <file.pdf> [page]
   pdfsink-rs words <file.pdf> [page]
   pdfsink-rs search <file.pdf> [page] [pattern]
