@@ -24,7 +24,12 @@ fn run() -> Result<()> {
         return Ok(());
     };
 
-    let pdf = PdfDocument::open(&path)?;
+    // Per-page commands parse only the page they read, and the page argument
+    // is consumed here. info reports every page, so it parses them all.
+    let pdf = match command.as_str() {
+        "info" => PdfDocument::open(&path)?,
+        _ => PdfDocument::open_pages(&path, &[page_number(args.next())])?,
+    };
 
     match command.as_str() {
         "info" => {
@@ -43,43 +48,43 @@ fn run() -> Result<()> {
             println!("{}", serde_json::to_string_pretty(&payload)?);
         }
         "text" => {
-            let page = resolve_page(&pdf, args.next())?;
+            let page = pdf.page(1)?; // the document holds only the requested page
             println!("{}", page.extract_text());
         }
         "words" => {
-            let page = resolve_page(&pdf, args.next())?;
+            let page = pdf.page(1)?; // the document holds only the requested page
             let words = page.extract_words();
             println!("{}", serde_json::to_string_pretty(&words)?);
         }
         "search" => {
-            let page = resolve_page(&pdf, args.next())?;
+            let page = pdf.page(1)?; // the document holds only the requested page
             let pattern = args.next().unwrap_or_default();
             let matches = page.search_with_options(&pattern, &SearchOptions::default(), &TextOptions::default())?;
             println!("{}", serde_json::to_string_pretty(&matches)?);
         }
         "objects" => {
-            let page = resolve_page(&pdf, args.next())?;
+            let page = pdf.page(1)?; // the document holds only the requested page
             let payload = page.to_dict(None);
             println!("{}", serde_json::to_string_pretty(&payload)?);
         }
         "json" => {
-            let page = resolve_page(&pdf, args.next())?;
+            let page = pdf.page(1)?; // the document holds only the requested page
             let rendered = page.to_json::<Vec<u8>>(None, None, None, None, None, Some(2))?
                 .unwrap_or_default();
             println!("{}", rendered);
         }
         "csv" => {
-            let page = resolve_page(&pdf, args.next())?;
+            let page = pdf.page(1)?; // the document holds only the requested page
             let rendered = page.to_csv::<Vec<u8>>(None, None, None, None, None)?
                 .unwrap_or_default();
             println!("{}", rendered);
         }
         "links" => {
-            let page = resolve_page(&pdf, args.next())?;
+            let page = pdf.page(1)?; // the document holds only the requested page
             println!("{}", serde_json::to_string_pretty(&page.hyperlinks)?);
         }
         "table" => {
-            let page = resolve_page(&pdf, args.next())?;
+            let page = pdf.page(1)?; // the document holds only the requested page
             let strategy = args.next().unwrap_or_else(|| "lines".to_string());
             let strat: TableStrategy = strategy.parse()?;
             let mut settings = TableSettings::default();
@@ -89,7 +94,7 @@ fn run() -> Result<()> {
             println!("{}", serde_json::to_string_pretty(&table)?);
         }
         "svg" => {
-            let page = resolve_page(&pdf, args.next())?;
+            let page = pdf.page(1)?; // the document holds only the requested page
             let output = args
                 .next()
                 .map(PathBuf::from)
@@ -98,7 +103,7 @@ fn run() -> Result<()> {
             eprintln!("wrote {}", output.display());
         }
         "render" => {
-            let page = resolve_page(&pdf, args.next())?;
+            let page = pdf.page(1)?; // the document holds only the requested page
             let output = args
                 .next()
                 .map(PathBuf::from)
@@ -115,12 +120,12 @@ fn run() -> Result<()> {
     Ok(())
 }
 
-fn resolve_page<'a>(pdf: &'a PdfDocument, page_arg: Option<String>) -> Result<&'a pdfsink_rs::Page> {
-    let page_number = page_arg
+/// The page argument as a number. Missing or unreadable means page 1.
+fn page_number(page_arg: Option<String>) -> usize {
+    page_arg
         .as_deref()
         .and_then(|value| value.parse::<usize>().ok())
-        .unwrap_or(1);
-    pdf.page(page_number)
+        .unwrap_or(1)
 }
 
 fn print_usage() {
