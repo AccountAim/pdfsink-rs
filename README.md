@@ -162,6 +162,7 @@ This is the expected entrypoint for in-browser workflows where you receive file 
 
 ```text
 pdfsink-rs info <file.pdf>
+pdfsink-rs pages <file.pdf> [lines|lines_strict|text|explicit]
 pdfsink-rs text <file.pdf> [page]
 pdfsink-rs words <file.pdf> [page]
 pdfsink-rs search <file.pdf> [page] [pattern]
@@ -173,6 +174,12 @@ pdfsink-rs table <file.pdf> [page] [lines|lines_strict|text|explicit]
 pdfsink-rs svg <file.pdf> [page] [output.svg]
 pdfsink-rs render <file.pdf> [page] [output.png]
 ```
+
+Per-page commands parse only the page they read. `pages` parses every page
+once and prints the `info` payload as one line of JSON, with `text` and
+`table` added to each page entry, so a whole document can be read in one
+run. The table strategy defaults to `lines`; `table` is `null` when no table
+is found; `text` has no trailing newline (the `text` command adds one).
 
 ## Architecture
 

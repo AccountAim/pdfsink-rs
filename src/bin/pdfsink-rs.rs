@@ -1,6 +1,6 @@
 use image::ImageFormat;
 use pdfsink_rs::{
-    PdfDocument, Result, SearchOptions, TableSettings, TableStrategy, TextOptions,
+    Page, PdfDocument, Result, SearchOptions, TableSettings, TableStrategy, TextOptions,
 };
 use std::fs;
 use std::path::PathBuf;
@@ -25,27 +25,30 @@ fn run() -> Result<()> {
     };
 
     // Per-page commands parse only the page they read, and the page argument
-    // is consumed here. info reports every page, so it parses them all.
+    // is consumed here. info and pages report every page, so they parse them all.
     let pdf = match command.as_str() {
-        "info" => PdfDocument::open(&path)?,
+        "info" | "pages" => PdfDocument::open(&path)?,
         _ => PdfDocument::open_pages(&path, &[page_number(args.next())])?,
     };
 
     match command.as_str() {
         "info" => {
-            let payload = serde_json::json!({
-                "path": path,
-                "page_count": pdf.len(),
-                "pages": pdf.pages().iter().map(|page| serde_json::json!({
-                    "page_number": page.page_number,
-                    "rotation": page.rotation,
-                    "width": page.width,
-                    "height": page.height,
-                    "bbox": page.bbox,
-                    "object_counts": page.object_counts(),
-                })).collect::<Vec<_>>(),
-            });
-            println!("{}", serde_json::to_string_pretty(&payload)?);
+            let pages = pdf.pages().iter().map(page_info).collect();
+            println!("{}", serde_json::to_string_pretty(&document_payload(&path, &pdf, pages))?);
+        }
+        "pages" => {
+            let settings = table_settings(args.next())?;
+            let pages = pdf
+                .pages()
+                .iter()
+                .map(|page| -> Result<serde_json::Value> {
+                    let mut entry = page_info(page);
+                    entry["text"] = page.extract_text().into();
+                    entry["table"] = serde_json::to_value(page.extract_table(settings.clone())?)?;
+                    Ok(entry)
+                })
+                .collect::<Result<Vec<_>>>()?;
+            println!("{}", serde_json::to_string(&document_payload(&path, &pdf, pages))?);
         }
         "text" => {
             let page = pdf.page(1)?; // the document holds only the requested page
@@ -85,12 +88,7 @@ fn run() -> Result<()> {
         }
         "table" => {
             let page = pdf.page(1)?; // the document holds only the requested page
-            let strategy = args.next().unwrap_or_else(|| "lines".to_string());
-            let strat: TableStrategy = strategy.parse()?;
-            let mut settings = TableSettings::default();
-            settings.vertical_strategy = strat;
-            settings.horizontal_strategy = strat;
-            let table = page.extract_table(settings)?;
+            let table = page.extract_table(table_settings(args.next())?)?;
             println!("{}", serde_json::to_string_pretty(&table)?);
         }
         "svg" => {
@@ -120,6 +118,31 @@ fn run() -> Result<()> {
     Ok(())
 }
 
+/// The per-page entry of the info payload.
+fn page_info(page: &Page) -> serde_json::Value {
+    serde_json::json!({
+        "page_number": page.page_number,
+        "rotation": page.rotation,
+        "width": page.width,
+        "height": page.height,
+        "bbox": page.bbox,
+        "object_counts": page.object_counts(),
+    })
+}
+
+fn document_payload(path: &str, pdf: &PdfDocument, pages: Vec<serde_json::Value>) -> serde_json::Value {
+    serde_json::json!({ "path": path, "page_count": pdf.len(), "pages": pages })
+}
+
+/// Table settings for a strategy argument. Missing means `lines`.
+fn table_settings(strategy: Option<String>) -> Result<TableSettings> {
+    let strategy: TableStrategy = strategy.as_deref().unwrap_or("lines").parse()?;
+    let mut settings = TableSettings::default();
+    settings.vertical_strategy = strategy;
+    settings.horizontal_strategy = strategy;
+    Ok(settings)
+}
+
 /// The page argument as a number. Missing or unreadable means page 1.
 fn page_number(page_arg: Option<String>) -> usize {
     page_arg
@@ -135,6 +158,7 @@ pdfsink-rs
 
 Usage:
   pdfsink-rs info <file.pdf>
+  pdfsink-rs pages <file.pdf> [lines|lines_strict|text|explicit]
   pdfsink-rs text <file.pdf> [page]
   pdfsink-rs words <file.pdf> [page]
   pdfsink-rs search <file.pdf> [page] [pattern]
