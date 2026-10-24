@@ -24,7 +24,13 @@ fn run() -> Result<()> {
         return Ok(());
     };
 
-    let pdf = PdfDocument::open(&path)?;
+    // Per-page commands parse only the page they read. info reports every
+    // page, so it parses them all.
+    let mut args = args.peekable();
+    let pdf = match command.as_str() {
+        "info" => PdfDocument::open(&path)?,
+        _ => PdfDocument::open_pages(&path, &[page_number(args.peek())])?,
+    };
 
     match command.as_str() {
         "info" => {
@@ -115,12 +121,17 @@ fn run() -> Result<()> {
     Ok(())
 }
 
-fn resolve_page<'a>(pdf: &'a PdfDocument, page_arg: Option<String>) -> Result<&'a pdfsink_rs::Page> {
-    let page_number = page_arg
-        .as_deref()
+/// The page a per-page command reads. The document holds only that page
+/// (see `run`), so it is always the first; the page argument is consumed.
+fn resolve_page<'a>(pdf: &'a PdfDocument, _page_arg: Option<String>) -> Result<&'a pdfsink_rs::Page> {
+    pdf.page(1)
+}
+
+/// The page argument as a number. Missing or unreadable means page 1.
+fn page_number(page_arg: Option<&String>) -> usize {
+    page_arg
         .and_then(|value| value.parse::<usize>().ok())
-        .unwrap_or(1);
-    pdf.page(page_number)
+        .unwrap_or(1)
 }
 
 fn print_usage() {
