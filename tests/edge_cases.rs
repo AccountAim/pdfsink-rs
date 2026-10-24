@@ -67,6 +67,73 @@ fn open_selected_pages_rejects_an_invalid_source_page() {
 }
 
 #[test]
+fn open_selected_pages_keeps_document_offsets() {
+    let path = fixture("multipage.pdf");
+    let full = PdfDocument::open(&path).unwrap();
+
+    for n in 1..=full.len() {
+        let selected = PdfDocument::open_pages(&path, &[n]).unwrap();
+        let page = selected.page(1).unwrap();
+        let expected = full.page(n).unwrap();
+
+        assert_eq!(page.doctop_offset, expected.doctop_offset, "page {n} offset");
+        let got: Vec<f64> = page.chars.iter().map(|ch| ch.doctop).collect();
+        let want: Vec<f64> = expected.chars.iter().map(|ch| ch.doctop).collect();
+        assert!(!want.is_empty(), "page {n} has no chars");
+        assert_eq!(got, want, "page {n} char doctop");
+    }
+}
+
+#[test]
+fn open_selected_pages_counts_rotated_and_inherited_page_heights() {
+    use lopdf::content::{Content, Operation};
+    use lopdf::{dictionary, Object, Stream};
+
+    let mut doc = lopdf::Document::with_version("1.7");
+    let pages = doc.new_object_id();
+    let font = doc.add_object(dictionary! {"Type"=>"Font", "Subtype"=>"Type1", "BaseFont"=>"Helvetica"});
+    let operations = vec![
+        Operation::new("BT", vec![]),
+        Operation::new("Tf", vec![Object::Name(b"F1".to_vec()), 12.into()]),
+        Operation::new("Td", vec![20.into(), 100.into()]),
+        Operation::new("Tj", vec![Object::string_literal("Hi")]),
+        Operation::new("ET", vec![]),
+    ];
+    let content = doc.add_object(Stream::new(dictionary! {}, Content { operations }.encode().unwrap()));
+
+    // 300x100 rotated 90 degrees: height 300.
+    let page1 = doc.add_object(dictionary! {"Type"=>"Page", "Parent"=>pages,
+        "MediaBox"=>vec![0.into(), 0.into(), 300.into(), 100.into()], "Rotate"=>90});
+    // No MediaBox of its own: inherits 500x400 from the Pages node, height 400.
+    let page2 = doc.add_object(dictionary! {"Type"=>"Page", "Parent"=>pages});
+    let page3 = doc.add_object(dictionary! {"Type"=>"Page", "Parent"=>pages,
+        "MediaBox"=>vec![0.into(), 0.into(), 200.into(), 250.into()],
+        "Resources"=>dictionary! {"Font"=>dictionary! {"F1"=>font}}, "Contents"=>content});
+    doc.objects.insert(pages, Object::Dictionary(dictionary! {"Type"=>"Pages",
+        "Kids"=>vec![page1.into(), page2.into(), page3.into()], "Count"=>3,
+        "MediaBox"=>vec![0.into(), 0.into(), 500.into(), 400.into()]}));
+    let root = doc.add_object(dictionary! {"Type"=>"Catalog", "Pages"=>pages});
+    doc.trailer.set("Root", root);
+    let mut bytes = Vec::new();
+    doc.save_to(&mut bytes).unwrap();
+
+    let full = PdfDocument::from_bytes(&bytes).unwrap();
+    let expected = full.page(3).unwrap();
+
+    let only_three = PdfDocument::from_bytes_pages(&bytes, &[3]).unwrap();
+    let page = only_three.page(1).unwrap();
+    assert_eq!(page.doctop_offset, 700.0, "page 3 offset");
+    assert_eq!(page.doctop_offset, expected.doctop_offset, "page 3 offset vs full parse");
+    let got: Vec<f64> = page.chars.iter().map(|ch| ch.doctop).collect();
+    let want: Vec<f64> = expected.chars.iter().map(|ch| ch.doctop).collect();
+    assert!(!want.is_empty(), "page 3 has no chars");
+    assert_eq!(got, want, "page 3 char doctop");
+
+    let only_two = PdfDocument::from_bytes_pages(&bytes, &[2]).unwrap();
+    assert_eq!(only_two.page(1).unwrap().doctop_offset, 300.0, "page 2 offset");
+}
+
+#[test]
 fn open_invalid_bytes_returns_error() {
     let result = PdfDocument::from_bytes(b"this is not a valid pdf");
     assert!(result.is_err());

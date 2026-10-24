@@ -452,6 +452,9 @@ fn open_pdf_document(
             .as_ref()
             .is_some_and(|numbers| !numbers.contains(&(page_number as usize)))
         {
+            // Skipped pages still count toward the document offset, so
+            // `doctop` matches a full parse.
+            doctop_offset += page_height(&doc, page_number as usize, page_id)?;
             continue;
         }
         let page = parse_page(&doc, page_number as usize, page_id, doctop_offset)?;
@@ -467,15 +470,29 @@ fn open_pdf_document(
     })
 }
 
-fn parse_page(doc: &Document, page_number: usize, page_id: ObjectId, doctop_offset: f64) -> Result<Page> {
-    let rotation = get_inherited_object(doc, page_id, b"Rotate")?
+fn page_rotation(doc: &Document, page_id: ObjectId) -> Result<i32> {
+    Ok(get_inherited_object(doc, page_id, b"Rotate")?
         .and_then(|obj| obj_to_i64(&obj))
         .unwrap_or(0)
-        .rem_euclid(360) as i32;
+        .rem_euclid(360) as i32)
+}
 
+fn page_media_box(doc: &Document, page_number: usize, page_id: ObjectId) -> Result<[f64; 4]> {
     let media_box_obj = get_inherited_object(doc, page_id, b"MediaBox")?
         .ok_or_else(|| Error::Message(format!("page {page_number} missing MediaBox")))?;
-    let media_box = obj_to_box(&media_box_obj)?;
+    obj_to_box(&media_box_obj)
+}
+
+/// The height `parse_page` gives a page, without parsing its content.
+fn page_height(doc: &Document, page_number: usize, page_id: ObjectId) -> Result<f64> {
+    let rotation = page_rotation(doc, page_id)?;
+    let media_box = page_media_box(doc, page_number, page_id)?;
+    Ok(PageGeometry::from_media_box(media_box, rotation, 0.0).height)
+}
+
+fn parse_page(doc: &Document, page_number: usize, page_id: ObjectId, doctop_offset: f64) -> Result<Page> {
+    let rotation = page_rotation(doc, page_id)?;
+    let media_box = page_media_box(doc, page_number, page_id)?;
     let geom = PageGeometry::from_media_box(media_box, rotation, doctop_offset);
     let mediabox = raw_box_to_bbox(media_box, geom).unwrap_or_else(|| geom.page_bbox());
     let cropbox = get_inherited_object(doc, page_id, b"CropBox")?
