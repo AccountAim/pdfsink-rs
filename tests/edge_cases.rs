@@ -1578,3 +1578,48 @@ fn all_bench_pdfs_render_no_panic() {
         }
     }
 }
+
+/// A Type3 font written inline in the page's Resources, not as its own
+/// object. Type3 parsing is skipped for documents without a Type3 font, so
+/// the font must be found wherever it is written.
+#[test]
+fn a_type3_font_written_inside_page_resources_is_parsed() {
+    use lopdf::content::{Content, Operation};
+    use lopdf::{dictionary, Object, Stream};
+
+    let mut doc = lopdf::Document::with_version("1.7");
+    let pages = doc.new_object_id();
+    let glyph = doc.add_object(Stream::new(
+        dictionary! {},
+        b"1000 0 0 0 0 0 d1 100 100 m 900 100 l 900 900 l 100 900 l h f".to_vec(),
+    ));
+    let font = dictionary! {"Type" => "Font", "Subtype" => "Type3",
+        "FontBBox" => vec![0.into(), 0.into(), 1000.into(), 1000.into()],
+        "FontMatrix" => vec![0.001.into(), 0.into(), 0.into(), 0.001.into(), 0.into(), 0.into()],
+        "CharProcs" => dictionary! {"a" => glyph},
+        "Encoding" => dictionary! {"Type" => "Encoding", "Differences" => vec![97.into(), Object::Name(b"a".to_vec())]},
+        "FirstChar" => 97, "LastChar" => 97, "Widths" => vec![1000.into()],
+        "Resources" => dictionary! {}};
+    let operations = vec![
+        Operation::new("BT", vec![]),
+        Operation::new("Tf", vec![Object::Name(b"F1".to_vec()), 24.into()]),
+        Operation::new("Td", vec![20.into(), 40.into()]),
+        Operation::new("Tj", vec![Object::string_literal("a")]),
+        Operation::new("ET", vec![]),
+    ];
+    let content = doc.add_object(Stream::new(dictionary! {}, Content { operations }.encode().unwrap()));
+    let page = doc.add_object(dictionary! {"Type" => "Page", "Parent" => pages,
+        "MediaBox" => vec![0.into(), 0.into(), 200.into(), 100.into()],
+        "Resources" => dictionary! {"Font" => dictionary! {"F1" => font}}, "Contents" => content});
+    doc.objects.insert(pages, Object::Dictionary(dictionary! {"Type" => "Pages", "Kids" => vec![page.into()], "Count" => 1}));
+    let root = doc.add_object(dictionary! {"Type" => "Catalog", "Pages" => pages});
+    doc.trailer.set("Root", root);
+    let mut bytes = Vec::new();
+    doc.save_to(&mut bytes).unwrap();
+
+    let pdf = PdfDocument::from_bytes(&bytes).unwrap();
+    let page = pdf.page(1).unwrap();
+
+    assert_eq!(page.extract_text(), "a");
+    assert!(page.chars.iter().all(|ch| ch.fontname.starts_with("Type3:")), "{:?}", page.chars.iter().map(|ch| &ch.fontname).collect::<Vec<_>>());
+}

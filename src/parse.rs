@@ -447,6 +447,10 @@ fn open_pdf_document(
     let mut ordered: Vec<(u32, ObjectId)> = pages.into_iter().collect();
     ordered.sort_by_key(|(page_number, _)| *page_number);
 
+    // The Type3 pass decodes every content stream again. Skip it when the
+    // document has no Type3 font, since it can produce nothing then.
+    let has_type3_font = document_has_type3_font(&doc);
+
     for (page_number, page_id) in ordered {
         if selected
             .as_ref()
@@ -457,7 +461,7 @@ fn open_pdf_document(
             doctop_offset += page_height(&doc, page_number as usize, page_id)?;
             continue;
         }
-        let page = parse_page(&doc, page_number as usize, page_id, doctop_offset)?;
+        let page = parse_page(&doc, page_number as usize, page_id, doctop_offset, has_type3_font)?;
         doctop_offset += page.height;
         parsed_pages.push(page);
     }
@@ -490,7 +494,13 @@ fn page_height(doc: &Document, page_number: usize, page_id: ObjectId) -> Result<
     Ok(PageGeometry::from_media_box(media_box, rotation, 0.0).height)
 }
 
-fn parse_page(doc: &Document, page_number: usize, page_id: ObjectId, doctop_offset: f64) -> Result<Page> {
+fn parse_page(
+    doc: &Document,
+    page_number: usize,
+    page_id: ObjectId,
+    doctop_offset: f64,
+    has_type3_font: bool,
+) -> Result<Page> {
     let rotation = page_rotation(doc, page_id)?;
     let media_box = page_media_box(doc, page_number, page_id)?;
     let geom = PageGeometry::from_media_box(media_box, rotation, doctop_offset);
@@ -544,7 +554,12 @@ fn parse_page(doc: &Document, page_number: usize, page_id: ObjectId, doctop_offs
     } else {
         (Vec::new(), Vec::new(), Vec::new())
     };
-    if let Ok(type3) = type3::collect(doc, page_id, &resources, geom, page_number) {
+    let type3 = if has_type3_font {
+        type3::collect(doc, page_id, &resources, geom, page_number).ok()
+    } else {
+        None
+    };
+    if let Some(type3) = type3 {
         for replacement in &type3.chars {
             chars.retain(|candidate| !type3::same_glyph_slot(candidate, replacement));
         }
@@ -1056,4 +1071,81 @@ fn object_to_dict(doc: &Document, obj: &Object) -> Result<Dictionary> {
 
 fn dict_get<'a>(dict: &'a Dictionary, key: &[u8]) -> Option<&'a Object> {
     dict.get(key).ok()
+}
+
+/// Whether any dictionary in the document, at any depth, is a Type3 font.
+/// Font dictionaries may be written inline in a Resources entry rather than
+/// as their own object, so this walks into dictionaries, arrays and stream
+/// dictionaries.
+fn document_has_type3_font(doc: &Document) -> bool {
+    fn holds_type3(object: &Object) -> bool {
+        match object {
+            Object::Dictionary(dict) => dict_holds_type3(dict),
+            Object::Stream(stream) => dict_holds_type3(&stream.dict),
+            Object::Array(items) => items.iter().any(holds_type3),
+            _ => false,
+        }
+    }
+    fn dict_holds_type3(dict: &Dictionary) -> bool {
+        matches!(dict_get(dict, b"Subtype"), Some(Object::Name(name)) if name == b"Type3")
+            || dict.iter().any(|(_, value)| holds_type3(value))
+    }
+    doc.objects.values().any(holds_type3)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use lopdf::dictionary;
+
+    fn type3_font() -> Dictionary {
+        dictionary! {"Type" => "Font", "Subtype" => "Type3", "CharProcs" => dictionary! {}}
+    }
+
+    #[test]
+    fn a_document_without_fonts_has_no_type3_font() {
+        let mut doc = Document::with_version("1.7");
+        doc.add_object(dictionary! {"Type" => "Page", "MediaBox" => vec![0.into(), 0.into(), 10.into(), 10.into()]});
+        assert!(!document_has_type3_font(&doc));
+    }
+
+    #[test]
+    fn a_type1_font_is_not_a_type3_font() {
+        let mut doc = Document::with_version("1.7");
+        doc.add_object(dictionary! {"Type" => "Font", "Subtype" => "Type1", "BaseFont" => "Helvetica"});
+        assert!(!document_has_type3_font(&doc));
+    }
+
+    #[test]
+    fn finds_a_type3_font_stored_as_its_own_object() {
+        let mut doc = Document::with_version("1.7");
+        doc.add_object(type3_font());
+        assert!(document_has_type3_font(&doc));
+    }
+
+    #[test]
+    fn finds_a_type3_font_written_inside_page_resources() {
+        let mut doc = Document::with_version("1.7");
+        doc.add_object(dictionary! {"Type" => "Page",
+            "Resources" => dictionary! {"Font" => dictionary! {"F1" => type3_font()}}});
+        assert!(document_has_type3_font(&doc));
+    }
+
+    #[test]
+    fn finds_a_type3_font_inside_a_form_xobject() {
+        let mut doc = Document::with_version("1.7");
+        doc.add_object(Stream::new(
+            dictionary! {"Type" => "XObject", "Subtype" => "Form",
+                "Resources" => dictionary! {"Font" => dictionary! {"F1" => type3_font()}}},
+            Vec::new(),
+        ));
+        assert!(document_has_type3_font(&doc));
+    }
+
+    #[test]
+    fn finds_a_type3_font_inside_an_array() {
+        let mut doc = Document::with_version("1.7");
+        doc.add_object(vec![Object::Dictionary(type3_font())]);
+        assert!(document_has_type3_font(&doc));
+    }
 }
