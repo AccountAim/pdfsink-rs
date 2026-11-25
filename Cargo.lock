@@ -698,7 +698,7 @@ dependencies = [
 
 [[package]]
 name = "pdfsink-rs"
-version = "0.2.20+aim.1"
+version = "0.2.20+aim.2"
 dependencies = [
  "clark-pdf-extract",
  "csv",
