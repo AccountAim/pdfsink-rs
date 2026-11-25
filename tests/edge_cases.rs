@@ -139,6 +139,97 @@ fn open_invalid_bytes_returns_error() {
     assert!(result.is_err());
 }
 
+/// Text a web server wrote after the end of a PDF.
+fn trailing_text(length: usize) -> Vec<u8> {
+    b"<p>not part of the PDF</p>\r\n".iter().copied().cycle().take(length).collect()
+}
+
+fn followed_by(mut pdf: Vec<u8>, trailing: &[u8]) -> Vec<u8> {
+    pdf.extend_from_slice(trailing);
+    pdf
+}
+
+/// A file under target/, named for the test that writes it.
+fn written(name: &str, bytes: &[u8]) -> PathBuf {
+    let path = Path::new(env!("CARGO_TARGET_TMPDIR")).join(name);
+    std::fs::write(&path, bytes).unwrap();
+    path
+}
+
+/// simple_text.pdf saved a second time: the update replaces the page content
+/// and ends in its own end marker, after the first one.
+fn saved_again() -> Vec<u8> {
+    let mut pdf = std::fs::read(fixture("simple_text.pdf")).unwrap();
+    let content = "BT /F1 12 Tf 72 720 Td (Saved Again) Tj ET";
+    let object_offset = pdf.len();
+    pdf.extend_from_slice(
+        format!("7 0 obj\n<< /Length {} >>\nstream\n{content}\nendstream\nendobj\n", content.len()).as_bytes(),
+    );
+    let xref_offset = pdf.len();
+    pdf.extend_from_slice(
+        format!(
+            "xref\n7 1\n{object_offset:010} 00000 n \ntrailer\n<< /Root 4 0 R /Size 8 /Prev 1031 >>\nstartxref\n{xref_offset}\n%%EOF\n"
+        )
+        .as_bytes(),
+    );
+    pdf
+}
+
+#[test]
+fn bytes_after_the_end_marker_are_not_read() {
+    let clean = std::fs::read(fixture("multipage.pdf")).unwrap();
+    let want = PdfDocument::from_bytes(&clean).unwrap();
+
+    for length in [100, 1_700, 100_000] {
+        let bytes = followed_by(clean.clone(), &trailing_text(length));
+
+        let all = PdfDocument::from_bytes(&bytes).unwrap_or_else(|err| panic!("{length} bytes after: {err}"));
+        assert_eq!(all.len(), want.len(), "{length} bytes after");
+        for n in 1..=want.len() {
+            assert_eq!(all.page(n).unwrap().extract_text(), want.page(n).unwrap().extract_text(), "{length} bytes after, page {n}");
+        }
+
+        let second = PdfDocument::from_bytes_pages(&bytes, &[2]).unwrap_or_else(|err| panic!("{length} bytes after: {err}"));
+        assert_eq!(second.page(1).unwrap().extract_text(), want.page(2).unwrap().extract_text(), "{length} bytes after, page 2 alone");
+    }
+}
+
+#[test]
+fn a_file_with_bytes_after_the_end_marker_opens() {
+    let clean = fixture("multipage.pdf");
+    let want = PdfDocument::open(&clean).unwrap();
+    let path = written(
+        "bytes_after_the_end_marker.pdf",
+        &followed_by(std::fs::read(&clean).unwrap(), &trailing_text(1_700)),
+    );
+
+    let all = PdfDocument::open(&path).unwrap();
+    assert_eq!(all.len(), want.len());
+    assert_eq!(all.page(1).unwrap().extract_text(), want.page(1).unwrap().extract_text());
+
+    let second = PdfDocument::open_pages(&path, &[2]).unwrap();
+    assert_eq!(second.page(1).unwrap().extract_text(), want.page(2).unwrap().extract_text());
+}
+
+#[test]
+fn the_last_end_marker_ends_a_document_saved_twice() {
+    let pdf = PdfDocument::from_bytes(saved_again()).unwrap();
+    assert_eq!(pdf.page(1).unwrap().extract_text(), "Saved Again", "with nothing after");
+
+    let pdf = PdfDocument::from_bytes(followed_by(saved_again(), &trailing_text(1_700))).unwrap();
+    assert_eq!(pdf.page(1).unwrap().extract_text(), "Saved Again", "with 1,700 bytes after");
+}
+
+#[test]
+fn a_file_with_no_end_marker_is_an_error() {
+    let mut bytes = std::fs::read(fixture("simple_text.pdf")).unwrap();
+    let marker = bytes.windows(5).rposition(|window| window == b"%%EOF").unwrap();
+    bytes.truncate(marker);
+
+    assert!(PdfDocument::from_bytes(&bytes).is_err());
+    assert!(PdfDocument::open(written("no_end_marker.pdf", &bytes)).is_err());
+}
+
 #[test]
 fn page_zero_returns_invalid_page() {
     let pdf = PdfDocument::open(fixture("simple_text.pdf")).unwrap();
