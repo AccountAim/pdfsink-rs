@@ -386,9 +386,26 @@ fn straight_line_from_path(path: &Path) -> Option<((f64, f64), (f64, f64))> {
     }
 }
 
+const END_MARKER: &[u8] = b"%%EOF";
+
+/// lopdf looks for the end marker only in the last 512 bytes it is given, so
+/// a PDF followed by more than that (a web page a server wrote after it) fails
+/// with "invalid start value". Nothing after the last marker belongs to the
+/// document, so lopdf gets the bytes up to it. The search runs from the end,
+/// so it costs what follows the marker, not the size of the file. With no
+/// marker lopdf gets every byte and reports the error itself.
+fn load_document(bytes: &[u8]) -> Result<Document> {
+    let end = bytes
+        .windows(END_MARKER.len())
+        .rposition(|window| window == END_MARKER)
+        .map_or(bytes.len(), |start| start + END_MARKER.len());
+
+    Ok(Document::load_mem(&bytes[..end])?)
+}
+
 pub fn open_pdf<P: AsRef<std::path::Path>>(path: P) -> Result<crate::types::PdfDocument> {
     let pathbuf = path.as_ref().to_path_buf();
-    let doc = Document::load(&pathbuf)?;
+    let doc = load_document(&std::fs::read(&pathbuf)?)?;
     open_pdf_document(doc, pathbuf, None)
 }
 
@@ -401,12 +418,12 @@ pub fn open_pdf_pages<P: AsRef<std::path::Path>>(
     page_numbers: &[usize],
 ) -> Result<crate::types::PdfDocument> {
     let pathbuf = path.as_ref().to_path_buf();
-    let doc = Document::load(&pathbuf)?;
+    let doc = load_document(&std::fs::read(&pathbuf)?)?;
     open_pdf_document(doc, pathbuf, Some(page_numbers))
 }
 
 pub fn open_pdf_bytes<B: AsRef<[u8]>>(bytes: B) -> Result<crate::types::PdfDocument> {
-    let doc = Document::load_mem(bytes.as_ref())?;
+    let doc = load_document(bytes.as_ref())?;
     open_pdf_document(doc, std::path::PathBuf::new(), None)
 }
 
@@ -415,7 +432,7 @@ pub fn open_pdf_bytes_pages<B: AsRef<[u8]>>(
     bytes: B,
     page_numbers: &[usize],
 ) -> Result<crate::types::PdfDocument> {
-    let doc = Document::load_mem(bytes.as_ref())?;
+    let doc = load_document(bytes.as_ref())?;
     open_pdf_document(doc, std::path::PathBuf::new(), Some(page_numbers))
 }
 
